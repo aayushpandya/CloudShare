@@ -1,0 +1,285 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: CloudFormation Template for Cloud Share Application
+
+Resources:
+  CloudShareS3Bucket:
+    Type: "AWS::S3::Bucket"
+    Properties:
+      BucketName: "secure-file-sharing-bucket"
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+
+  CloudShareSNSTopic:
+    Type: "AWS::SNS::Topic"
+
+  CloudShareSNSSubscription:
+    Type: "AWS::SNS::Subscription"
+    Properties:
+      Protocol: "email"
+      TopicArn:
+        Ref: "CloudShareSNSTopic"
+      Endpoint: "aayushypandya@gmail.com"
+
+  CloudShareLambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      FunctionName: "SecureFileShareLambda"
+      Code:
+        S3Bucket: "cloud-project-code"
+        S3Key: "lambda_function.zip"
+      Handler: "lambda_function.lambda_handler"
+      Role: "arn:aws:iam::185225109946:role/LabRole"
+      Runtime: "python3.9"
+      Timeout: 30
+      Environment:
+        Variables:
+          SNS_TOPIC_ARN: !Ref CloudShareSNSTopic
+
+  DeleteExpiredFilesLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: DeleteExpiredFilesLambda
+      Runtime: python3.9
+      Handler: lambda_function_delete.lambda_handler
+      Role: arn:aws:iam::185225109946:role/LabRole
+      Code:
+        S3Bucket: "cloud-project-code"
+        S3Key: "lambda_function_delete.zip"
+      Timeout: 60
+
+  DeleteExpiredFilesRule:
+    Type: "AWS::Events::Rule"
+    Properties:
+      Name: "DeleteExpiredFilesRule"
+      ScheduleExpression: "rate(2 minutes)"
+      Targets:
+        - Arn: !GetAtt DeleteExpiredFilesLambda.Arn
+          Id: "TargetFunctionV1"
+
+  DeleteExpiredFilesPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      FunctionName: !Ref DeleteExpiredFilesLambda
+      Action: "lambda:InvokeFunction"
+      Principal: "events.amazonaws.com"
+      SourceArn: !GetAtt DeleteExpiredFilesRule.Arn
+
+  CloudShareApiKey:
+    Type: "AWS::ApiGateway::ApiKey"
+    Properties:
+      Name: "sfs-api-key"
+      Description: "API Key for SecureFileShareAPI API Gateway"
+      Enabled: true
+      GenerateDistinctId: true
+
+  CloudShareApiGateway:
+    Type: "AWS::ApiGateway::RestApi"
+    Properties:
+      Name: "SecureFileShareAPI"
+      EndpointConfiguration:
+        Types:
+          - "REGIONAL"
+
+  CloudShareGatewayResponse4:
+    Type: "AWS::ApiGateway::GatewayResponse"
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+      ResponseType: "DEFAULT_4XX"
+      RestApiId:
+        Ref: "CloudShareApiGateway"
+      StatusCode: "200"
+
+  CloudShareGatewayResponse5:
+    Type: "AWS::ApiGateway::GatewayResponse"
+    Properties:
+      ResponseParameters:
+        gatewayresponse.header.Access-Control-Allow-Origin: "'*'"
+        gatewayresponse.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+        gatewayresponse.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+      ResponseType: "DEFAULT_5XX"
+      RestApiId:
+        Ref: "CloudShareApiGateway"
+      StatusCode: "200"
+
+  CloudShareApiResource:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId:
+        Ref: "CloudShareApiGateway"
+      ParentId:
+        Fn::GetAtt: ["CloudShareApiGateway", "RootResourceId"]
+      PathPart: "share"
+
+  CloudShareApiMethodOptions:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      RestApiId:
+        Ref: "CloudShareApiGateway"
+      ResourceId:
+        Ref: "CloudShareApiResource"
+      HttpMethod: "OPTIONS"
+      AuthorizationType: "NONE"
+      Integration:
+        Type: "MOCK"
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: "{}"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+          ResponseModels:
+            application/json: "Empty"
+
+  CloudShareApiMethodPost:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      RestApiId:
+        Ref: "CloudShareApiGateway"
+      ResourceId:
+        Ref: "CloudShareApiResource"
+      HttpMethod: "POST"
+      AuthorizationType: "NONE"
+      ApiKeyRequired: true
+      Integration:
+        Type: "AWS"
+        IntegrationHttpMethod: "POST"
+        Uri:
+          Fn::Sub: "arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${CloudShareLambdaFunction.Arn}/invocations"
+        IntegrationResponses:
+          - StatusCode: "200"
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'OPTIONS,POST'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        Credentials: "arn:aws:iam::185225109946:role/LabRole"
+      MethodResponses:
+        - StatusCode: "200"
+          ResponseModels:
+            application/json: "Empty"
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+
+  CloudShareMyUsagePlan:
+    Type: "AWS::ApiGateway::UsagePlan"
+    Properties:
+      ApiStages:
+        - ApiId: !Ref CloudShareApiGateway
+          Stage: !Ref CloudShareMyApiStage
+      UsagePlanName: "CloudShareMyUsagePlan"
+
+  CloudShareMyUsagePlanKey:
+    Type: "AWS::ApiGateway::UsagePlanKey"
+    Properties:
+      KeyId: !Ref CloudShareApiKey
+      KeyType: "API_KEY"
+      UsagePlanId: !Ref CloudShareMyUsagePlan
+
+  CloudShareMyApiStage:
+    Type: "AWS::ApiGateway::Stage"
+    Properties:
+      DeploymentId: !Ref CloudShareAPIDeployment
+      RestApiId: !Ref CloudShareApiGateway
+      StageName: "dev"
+
+  CloudShareAPIDeployment:
+    Type: "AWS::ApiGateway::Deployment"
+    Properties:
+      RestApiId: !Ref CloudShareApiGateway
+    DependsOn:
+      - CloudShareApiMethodPost
+
+  CloudShareApiKeyLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: CloudShareApiKeyLambda
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: arn:aws:iam::185225109946:role/LabRole
+      Code:
+        ZipFile: |
+          import boto3
+          import cfnresponse
+
+          def getCloudShareApiKeyValue(apiKeyId):
+              apigateway_client = boto3.client('apigateway')
+
+              try:
+                  response = apigateway_client.get_api_key(apiKey=apiKeyId, includeValue=True)
+                  apiKeyValue = response['value']
+                  return apiKeyValue
+              except Exception as e:
+                  raise Exception(f"Error fetching API Key Value: {str(e)}")
+
+          def lambda_handler(event, context):
+              try:
+                  apiKeyId = event['ResourceProperties']['ApiKeyId']
+                  apiKeyValue = getCloudShareApiKeyValue(apiKeyId)
+                  cfnresponse.send(event, context, cfnresponse.SUCCESS, {"ApiKeyValue": apiKeyValue})
+              except Exception as e:
+                  cfnresponse.send(event, context, cfnresponse.FAILED, {"Error": str(e)})
+
+  CloudShareCustomResource:
+    Type: Custom::GetApiKeyLambdaCR
+    Properties:
+      ServiceToken: !GetAtt CloudShareApiKeyLambda.Arn
+      ApiKeyId: !Ref CloudShareApiKey
+
+  CloudShareEC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for the EC2 instance
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+  CloudShareEC2Instance:
+    Type: AWS::EC2::Instance
+    Properties:
+      InstanceType: t2.micro
+      KeyName: vockey
+      ImageId: ami-053b0d53c279acc90
+      SecurityGroupIds:
+        - !Ref CloudShareEC2SecurityGroup
+      Tags:
+        - Key: Name
+          Value: SFS-Frontend
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash -xe
+          sudo apt-get update -y >> /var/log/userdata.log 2>&1
+          sudo apt-get install -y unzip >> /var/log/userdata.log 2>&1
+          sudo apt-get install -y nodejs >> /var/log/userdata.log 2>&1
+          sudo apt-get install -y npm >> /var/log/userdata.log 2>&1
+          sudo apt-get install -y git >> /var/log/userdata.log 2>&1
+          sudo apt-get install -y nginx >> /var/log/userdata.log 2>&1
+          git clone https://gitlab-ci-token:glpat-CsNc4ofXKf_P-fotorbm@git.cs.dal.ca/aypandya/cloud-term-project.git /home/ubuntu/cloudshare >> /var/log/userdata.log 2>&1
+          cd /home/ubuntu/cloudshare >> /var/log/userdata.log 2>&1
+          sed -i "s|REACT_APP_API_ENDPOINT_URL=.*|REACT_APP_API_ENDPOINT_URL=https://${CloudShareApiGateway}.execute-api.${AWS::Region}.amazonaws.com/dev/share|" .env >> /var/log/userdata.log 2>&1
+          sed -i "s|REACT_APP_API_KEY=.*|REACT_APP_API_KEY=${CloudShareCustomResource.ApiKeyValue}|" .env >> /var/log/userdata.log 2>&1
+          npm install >> /var/log/userdata.log 2>&1
+          npm run build >> /var/log/userdata.log 2>&1
+          sudo rm -rf /var/www/html/* >> /var/log/userdata.log 2>&1
+          sudo cp -r build/* /var/www/html/ >> /var/log/userdata.log 2>&1
+          sudo systemctl start nginx >> /var/log/userdata.log 2>&1
+
+Outputs:
+  EC2PublicIp:
+    Value: !GetAtt CloudShareEC2Instance.PublicIp
+    Description: Cloud Share EC2 Instance Public IP
